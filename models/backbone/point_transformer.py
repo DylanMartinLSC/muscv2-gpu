@@ -33,11 +33,11 @@ class Group(nn.Module):
         '''
         # fps the centers out
         center, center_idx = fps(xyz.contiguous(), self.num_group)  # B G 3
-        # knn to get the neighborhood
+        # knn to get the neighborhood (only the neighborhoods of the centers are used, so only they are queried)
         device = xyz.device
-        _, idx_all = self.knn(xyz.cpu(), xyz.cpu())
-        idx_all = idx_all.to(device)
-        idx, curvatures, neighborhood = iter_group(xyz, center_idx, idx_all, self.group_size)
+        _, idx_center = self.knn(xyz.cpu(), center.cpu())
+        idx_center = idx_center.to(device)
+        idx, curvatures, neighborhood = iter_group(xyz, center_idx, idx_center, self.group_size)
         assert idx.size(1) == self.num_group
         assert idx.size(2) == self.group_size
         ori_idx = idx

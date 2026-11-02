@@ -2,24 +2,31 @@ import torch
 from tqdm import tqdm
 
 
+# The cross-modal project lists hold, per image, groups (org_idx (M,), cross_idx (M, k)): the M entries
+# org_idx of one modality each project to the k entries in the matching row of cross_idx of the other modality.
+# Entries are grouped by k so they can be averaged together; entries projecting to nothing are left out.
+
 def patch2point(patch_num, nonzero_indices_center_list, image_size):
     # (B, L, C) (B, N) (B, N, group_size)
     patch_num_ = int(patch_num**0.5)
     patch_size = int(image_size // patch_num_)
+    patch_coor = (nonzero_indices_center_list//image_size//patch_size, nonzero_indices_center_list%image_size//patch_size)
+    patch_idx = patch_coor[0]*patch_num_+patch_coor[1]
+    in_patch = (patch_coor[1] < patch_num_) & (patch_idx < patch_num)
+    patch_idx = torch.where(in_patch, patch_idx, patch_num)   # patch_num: in no patch
     patch2point_list = []
     for img_idx in range(nonzero_indices_center_list.shape[0]):
         patch2point_img_list = []
-        point_idx = nonzero_indices_center_list[img_idx]
-        for patch_idx in range(patch_num):
-            patch_coors = (patch_idx//patch_num_, patch_idx%patch_num_)
-            pixel_coors = (patch_coors[0]*patch_size, patch_coors[1]*patch_size)
-            point_idx_ = torch.zeros_like(point_idx)
-            point_idx_[point_idx//image_size<pixel_coors[0]] = -1
-            point_idx_[point_idx//image_size>=pixel_coors[0]+patch_size] = -1
-            point_idx_[point_idx%image_size<pixel_coors[1]] = -1
-            point_idx_[point_idx%image_size>=pixel_coors[1]+patch_size] = -1
-            point_idx_ = torch.where(point_idx_ != -1)
-            patch2point_img_list.append(point_idx_[0])
+        # points sorted by patch, keeping ascending point order inside a patch
+        point_order = torch.sort(patch_idx[img_idx], stable=True)[1]
+        point_num = torch.bincount(patch_idx[img_idx], minlength=patch_num+1)[:patch_num]
+        point_start = torch.cumsum(point_num, 0) - point_num
+        for k in torch.unique(point_num).tolist():
+            if k == 0:
+                continue
+            patches = torch.nonzero(point_num == k).squeeze(1)
+            points = point_order[point_start[patches].unsqueeze(1) + torch.arange(k, device=patches.device)]
+            patch2point_img_list.append((patches, points))
         patch2point_list.append(patch2point_img_list)
     return patch2point_list
 
@@ -31,28 +38,27 @@ def point2patch(patch_num, nonzero_indices_center_list, image_size):
     point_coor = (nonzero_indices_center_list//image_size, nonzero_indices_center_list%image_size)
     patch_coor = (point_coor[0]//patch_size, point_coor[1]//patch_size)
     patch_idx = patch_coor[0]*patch_num_+patch_coor[1]
-    point2patch_list = []
-    for img_idx in range(patch_idx.shape[0]):
-        point2patch_img_list = []
-        for point_idx in range(patch_idx.shape[1]):
-            patch_idx_ = torch.unique(patch_idx[img_idx, point_idx])
-            point2patch_img_list.append(patch_idx_)
-        point2patch_list.append(point2patch_img_list)
-    return point2patch_list
+    point_idx = torch.arange(patch_idx.shape[1], device=patch_idx.device)
+    # every point projects to exactly one patch
+    return [[(point_idx, patch_idx[img_idx].unsqueeze(1))] for img_idx in range(patch_idx.shape[0])]
 
 
 def cross_modal_align(Z_org, Z_cross, proj_index):
     # cross-modal alignment
     image_num, patch_num, _ = Z_org.shape
     _, _, c_cross = Z_cross.shape
-    Z_org_cross = torch.zeros((image_num, patch_num, c_cross)).to(Z_org.device)
+    Z_org_cross = torch.zeros((image_num, patch_num, c_cross), device=Z_org.device)
     for img_idx in range(image_num):
-        for patch_idx in range(patch_num):
-            patch_proj_cross_idx = proj_index[img_idx][patch_idx]
-            if patch_proj_cross_idx.shape[0]==0:
-                continue
-            patch_proj_cross_features = Z_cross[img_idx][patch_proj_cross_idx]
-            Z_org_cross[img_idx, patch_idx] = patch_proj_cross_features.mean(0)
+        for org_idx, cross_idx in proj_index[img_idx]:
+            if cross_idx.shape[1] < 64:
+                # (k, M, C) -> mean over the k projected entries -> (M, C). For k < 64 the CUDA reduction sums
+                # each output sequentially, exactly as the per-entry (k, C) mean does, whatever M is.
+                patch_proj_cross_features = Z_cross[img_idx][cross_idx.T]
+                Z_org_cross[img_idx, org_idx] = patch_proj_cross_features.mean(0).to(Z_org_cross.dtype)
+            else:
+                # larger k may be split across warps depending on the output count, so keep one mean per entry
+                for patch_idx, patch_proj_cross_idx in zip(org_idx.tolist(), cross_idx):
+                    Z_org_cross[img_idx, patch_idx] = Z_cross[img_idx][patch_proj_cross_idx].mean(0)
     return Z_org_cross
 
 

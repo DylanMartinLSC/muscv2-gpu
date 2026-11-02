@@ -65,6 +65,16 @@ class MuScV2():
 
 
     def load_backbone(self):
+        # The backbones are the same for every category, so they are built once. Building them consumes
+        # random numbers right after setup_seed, and the point transformer runs in train mode (DropPath
+        # draws from the RNG), so later categories restore the RNG state a rebuild would have left behind.
+        if getattr(self, 'backbone_rng_state', {}).get('seed') == self.seed:
+            torch.set_rng_state(self.backbone_rng_state['torch'])
+            if self.backbone_rng_state['cuda'] is not None:
+                torch.cuda.set_rng_state_all(self.backbone_rng_state['cuda'])
+            np.random.set_state(self.backbone_rng_state['numpy'])
+            random.setstate(self.backbone_rng_state['random'])
+            return
         if self.modality in ['2d', '2d+3d']:
             self.dino_model = _backbones.load(self.model_name[0])
             self.dino_model.to(self.device)
@@ -72,6 +82,13 @@ class MuScV2():
             from models.backbone.point_transformer import PointTransformer
             self.point_transformer = PointTransformer(group_size=128, num_group=1024).to(self.device)
             self.point_transformer.load_model_from_ckpt('./pointmae_pretrain.pth')
+        self.backbone_rng_state = {
+            'seed': self.seed,
+            'torch': torch.get_rng_state(),
+            'cuda': torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+            'numpy': np.random.get_state(),
+            'random': random.getstate(),
+        }
 
 
     def load_datasets(self, category='', get_categories=False):
