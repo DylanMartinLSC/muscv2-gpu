@@ -1,19 +1,49 @@
-# ✨MuSc-V2 (TPAMI 2026)✨
+# MuSc-V2-GPU: faster MuSc-V2 inference, identical results
 
-**This is an official PyTorch implementation for "MuSc-V2: Zero-Shot Multimodal Industrial Anomaly Classification and Segmentation with Mutual Scoring of Unlabeled Samples"**
+This is a fork of the [official MuSc-V2 implementation](https://github.com/HUST-SLOW/MuSc-V2) for
+"MuSc-V2: Zero-Shot Multimodal Industrial Anomaly Classification and Segmentation with Mutual Scoring of Unlabeled Samples"
+(TPAMI 2026) by [Xurui Li](https://github.com/xrli-U), [Feng Xue](https://xuefeng-cvr.github.io/) and [Yu Zhou](https://github.com/zhouyu-hust).
+Paper: [IEEE](https://ieeexplore.ieee.org/abstract/document/11498451) | [Arxiv](https://arxiv.org/abs/2511.10047).
+The method, models, configs and command-line interface are unchanged; all credit for the method goes to the authors.
 
-Authors:  [Xurui Li](https://github.com/xrli-U)<sup>1</sup> | [Feng Xue](https://xuefeng-cvr.github.io/)<sup>2</sup> | [Yu Zhou](https://github.com/zhouyu-hust)<sup>1</sup>
+<span id='fork'/>
 
-Institutions: <sup>1</sup>Huazhong University of Science and Technology | <sup>2</sup>University of Trento
+## What this fork changes
 
-### 🧐 Paper: [IEEE](https://ieeexplore.ieee.org/abstract/document/11498451) | [Arxiv](https://arxiv.org/abs/2511.10047)
+Only the inference implementation. The anomaly maps and image scores are **bit-for-bit identical** to the upstream
+code (checked with `np.array_equal` on GPU and CPU), so every metric in the paper and in
+<a href='#results_datasets'>Detailed results</a> is reproduced exactly. It just runs faster:
 
+| config (RTX 3090, median of 3 runs) | upstream | this fork | speedup |
+|---|---|---|---|
+| 2D+3D, 1 category x 100 images | 123.2 s | 20.3 s | **6.1x** |
+| 2D+3D, 3 categories x ~34 images | 134.5 s | 27.0 s | **5.0x** |
+| 3D only, 3 categories | 92.6 s | 23.7 s | **3.9x** |
+| 2D only, 3 categories | 17.0 s | 14.9 s | 1.15x |
+
+Peak GPU memory is slightly lower (3,294 -> 3,219 MiB for 2D+3D, 100 images).
+The 3D and cross-modal steps gain the most; the 2D-only path was already GPU-bound.
+
+| change | file |
+|---|---|
+| The kNN is queried only for the 1,024 FPS centers, the only rows that are used, instead of every foreground point | `models/backbone/point_transformer.py` |
+| Iterative point grouping builds its search sets in one batched sort instead of per-center `isin`/`unique` calls (no host-device syncs) | `models/modules/_IPG.py` |
+| The 2D-3D projection lists and cross-modal alignment are vectorized instead of looping over every patch and point in Python | `models/modules/_MSM.py` |
+| The backbones are built once per run instead of once per category, restoring the RNG state a rebuild would leave | `models/muscv2.py` |
+
+[benchmarks/RESULTS.md](benchmarks/RESULTS.md) explains why each change is exact, how it was verified, its limitations
+and how to reproduce the numbers. [benchmarks/](benchmarks/README.md) holds the tools: a builder for small eval sets,
+an end-to-end runner and bit-for-bit comparer that works on any code tree, and function-level equivalence tests.
+
+Upstream issue: [HUST-SLOW/MuSc-V2#7](https://github.com/HUST-SLOW/MuSc-V2/issues/7).
+
+The rest of this README is the upstream documentation, which applies unchanged.
 
 ## <a href='#all_catelogue'>**Go to Catalogue**</a>
 
 
 
-## 📣News:
+## 📣News (upstream):
 **[*04/27/2026*]**
 - 📤The complete and reproducible code for MuSc-V2 is released.
 
@@ -29,6 +59,7 @@ Institutions: <sup>1</sup>Huazhong University of Science and Technology | <sup>2
 
 ## 📖Catalogue
 
+* <a href='#fork'>0. What this fork changes</a>
 * <a href='#abstract'>1. Abstract</a>
 * <a href='#setup'>2. Environment setup</a>
 * <a href='#datasets'>3. Datasets download</a>
@@ -65,7 +96,7 @@ Our framework flexibly works on both the full dataset and smaller subsets with c
 Clone the repository locally:
 
 ```
-git clone https://github.com/HUST-SLOW/MuSc-V2.git
+git clone https://github.com/DylanMartinLSC/muscv2-gpu.git
 ```
 
 Create virtual environment:
@@ -169,7 +200,7 @@ The key arguments of the script are as follows:
 
 ## 🎖️Detailed results: <a href='#all_catelogue'>[Back to Catalogue]</a>
 
-All the results are implemented by the default settings in our paper.
+All the results are implemented by the default settings in the paper (this fork produces identical outputs).
 
 ### MVTec 3D-AD
 
